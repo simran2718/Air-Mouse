@@ -1,0 +1,11 @@
+{
+    "h_min": 106,
+    "s_min": 100,
+    "v_min": 100,
+    "h_max": 130,
+    "s_max": 255,
+    "v_max": 255,
+    "smoothening": 8,
+    "frame_margin": 100,
+    "dwell_time_req": 2.0
+}
