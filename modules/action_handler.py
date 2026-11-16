@@ -17,6 +17,8 @@ class ActionController:
         self.screen_w, self.screen_h = pyautogui.size()
         self.cam_w = cam_w
         self.cam_h = cam_h
+        # Smart Scroll Rate Limiter
+        self.last_scroll_time = 0.0
 
         self.filter_x = OneEuroFilter(min_cutoff=0.8, beta=0.04)
         self.filter_y = OneEuroFilter(min_cutoff=0.8, beta=0.04)
@@ -103,13 +105,26 @@ class ActionController:
         return event_msg
 
     def handle_scroll(self, tip_y):
+        curr_time = time.time()
         mid_y = self.cam_h // 2
-        if tip_y < mid_y - 35:
-            self.mouse.scroll(0, 1)
-            return "Scrolling UP"
-        elif tip_y > mid_y + 35:
-            self.mouse.scroll(0, -1)
-            return "Scrolling DOWN"
+        offset = tip_y - mid_y  
+
+        
+        if abs(offset) < 40:
+            return "Scroll: Neutral (Paused)"
+
+        
+        distance = min(abs(offset) - 40, 140)
+        delay = max(0.08, 0.35 - (distance / 140.0) * 0.27)  # 0.35s (slow) to 0.08s (fast) 
+
+        if (curr_time - self.last_scroll_time) >= delay:
+            self.last_scroll_time = curr_time
+            if offset < 0:
+                self.mouse.scroll(0, 1)
+                return "Scrolling UP (Controlled)"
+            else:
+                self.mouse.scroll(0, -1)
+                return "Scrolling DOWN (Controlled)"
         return None
 
     def handle_draw(self, raw_x, raw_y, frame, curr_time):

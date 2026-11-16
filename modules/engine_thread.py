@@ -9,10 +9,9 @@ from modules.action_handler import ActionController
 
 
 class VisionEngine(QThread):
-    """Background worker thread running the real-time Computer Vision & HCI pipeline."""
+    """Optimized background worker thread with frame-rate pacing and buffer clearing."""
 
     frame_ready = Signal(QImage)
-    # Emits: FPS, Latency(ms), X, Y, Confidence, Status, Last_Event
     telemetry_ready = Signal(int, float, int, int, int, str, str)
 
     def __init__(self, config):
@@ -40,7 +39,7 @@ class VisionEngine(QThread):
         self.tracker = PenTracker()
         self.controller = ActionController(self.cam_w, self.cam_h)
 
-        # Performance Benchmark Logs (for Section 11 Evaluation)
+        # Performance Benchmark Logs
         self.benchmark_logs = []
 
     def export_benchmarks(self, filepath):
@@ -53,29 +52,36 @@ class VisionEngine(QThread):
         cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         if not cap.isOpened():
             cap = cv2.VideoCapture(0)
-        cap.set(3, self.cam_w)
-        cap.set(4, self.cam_h)
-        cap.set(cv2.CAP_PROP_FPS, 60)
 
-        prev_time = 0
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cam_w)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cam_h)
+        # FIX 1: Camera buffer size 1 rakhna taaki purane frames queue na hon
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        prev_time = time.perf_counter()
+        last_ui_update = 0.0
+        frame_counter = 0
 
         while self.running:
             frame_start = time.perf_counter()
             success, frame = cap.read()
             if not success:
+                self.msleep(10)
                 continue
 
             frame = cv2.flip(frame, 1)
             curr_time = time.time()
-            fps = int(1 / (curr_time - prev_time)) if (curr_time - prev_time) > 0 else 0
-            prev_time = curr_time
+
+            # Smooth FPS calculation
+            dt = frame_start - prev_time
+            fps = int(1.0 / dt) if dt > 0 else 0
+            prev_time = frame_start
 
             lower = np.array([self.h_min, self.s_min, self.v_min])
             upper = np.array([self.h_max, self.s_max, self.v_max])
 
             detected, (raw_x, raw_y), bbox, confidence, mask = self.tracker.detect_pen(frame, lower, upper)
 
-            # Draw UI Overlays on Video Frame
             if self.mode in ["MOUSE", "SCROLL"]:
                 cv2.rectangle(frame, (self.frame_margin, self.frame_margin),
                               (self.cam_w - self.frame_margin, self.cam_h - self.frame_margin),
@@ -118,20 +124,27 @@ class VisionEngine(QThread):
             if self.mode == "DRAW":
                 frame = self.controller.merge_canvas(frame)
 
-            # Calculate End-to-End Processing Latency in Milliseconds
             latency_ms = round((time.perf_counter() - frame_start) * 1000, 1)
 
-            # Store telemetry sample (keep last 2000 frames)
-            if len(self.benchmark_logs) < 2000:
+            # FIX 2: UI ko sirf ~30 FPS par update karna taaki PySide6 signal queue jam na ho
+            # (Mouse tracking backend mein full speed par chalti rahegi!)
+            if (frame_start - last_ui_update) >= 0.032:
+                display_img = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB) if self.show_mask else cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                h, w, ch = display_img.shape
+                qt_img = QImage(display_img.data, w, h, ch * w, QImage.Format_RGB888).copy()
+
+                self.frame_ready.emit(qt_img)
+                self.telemetry_ready.emit(fps, latency_ms, tip_x, tip_y, confidence, status_text, self.last_event_text)
+                last_ui_update = frame_start
+
+            # Benchmark log har 10th frame par save karna (memory bachane ke liye)
+            frame_counter += 1
+            if frame_counter % 10 == 0 and len(self.benchmark_logs) < 1000:
                 self.benchmark_logs.append([
                     time.strftime("%H:%M:%S"), self.mode, fps, latency_ms, tip_x, tip_y, confidence
                 ])
 
-            display_img = cv2.cvtColor(mask, cv2.COLOR_GRAY2RGB) if self.show_mask else cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = display_img.shape
-            qt_img = QImage(display_img.data, w, h, ch * w, QImage.Format_RGB888).copy()
-
-            self.frame_ready.emit(qt_img)
-            self.telemetry_ready.emit(fps, latency_ms, tip_x, tip_y, confidence, status_text, self.last_event_text)
+            # FIX 3: CPU ko 5ms saans lene dena taaki OS mouse events aur GUI smooth rahein
+            self.msleep(5)
 
         cap.release()
